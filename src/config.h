@@ -12,6 +12,11 @@
 #define RE_CLK 2
 #define RE_DT 3
 
+#define CLICK 4
+
+#define EEPROM_ADDR_WPM 0  // EEPROM address to store WPM
+
+
 
 
 #endif
