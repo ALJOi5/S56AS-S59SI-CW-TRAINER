@@ -3,29 +3,39 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <EEPROM.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+#define EEPROM_ADDR_WPM 0
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-boolean modeToggle = false; //straight key
-unsigned long prevMillis = 0;  // Last time we toggled
-int buttonState = 0;           // Current button state
-int lastButtonState = HIGH;    // Last button state (for detecting changes)
-unsigned long debounceDelay = 20; // Debounce delay in milliseconds
+boolean modeToggle = true;
+unsigned long prevMillis = 0;
+int lastButtonState = HIGH;
+unsigned long debounceDelay = 190;
 
-// Rotary encoder state
-int encoderPos = 5; 
+int encoderPos = 30;
 int lastRE_CLK;
 int currentRE_CLK;
 
-#define DEBOUNCE_DELAY 10  // Adjust the debounce delay for smoother operation
+#define ENCODER_DEBOUNCE 5
+unsigned long lastEncoderChange = 0;
+int lastEncoderPos = 0;
 
-unsigned long lastDebounceTime = 0;  // Last debounce time
-int lastEncoderPos = 0;  // Store the last position to detect change
+// CLICK button debounce
+int lastClickState = HIGH;
+unsigned long lastClickMillis = 0;
+const unsigned long clickDebounceDelay = 200;
+
+// For non-blocking display message
+bool showSavedMessage = false;
+unsigned long savedMessageStartTime = 0;
+const unsigned long savedMessageDuration = 1800;
 
 void updateText(String a);
+void showSavedWPMMessage();
 
 void setup() {
   pinMode(MODE_BUTTON, INPUT_PULLUP);
@@ -37,12 +47,13 @@ void setup() {
   pinMode(INPUT1_CW, INPUT_PULLUP);
   pinMode(RE_CLK, INPUT_PULLUP);
   pinMode(RE_DT, INPUT_PULLUP);
+  pinMode(CLICK, INPUT_PULLUP);
 
   Serial.begin(115200);
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
-    for(;;){
+    for (;;) {
       digitalWrite(PADDLE_STATUS_LED, HIGH);
       digitalWrite(STRAIGHT_STATUS_LED, HIGH);
       delay(500);
@@ -51,8 +62,23 @@ void setup() {
       delay(500);
     }
   }
+
+  int savedWPM = EEPROM.read(EEPROM_ADDR_WPM);
+  if (savedWPM < 5 || savedWPM > 99) {
+    encoderPos = 30;
+    Serial.println("No valid WPM in EEPROM. Using default: 30");
+  } else {
+    encoderPos = savedWPM;
+    Serial.print("Loaded WPM from EEPROM: ");
+    Serial.println(encoderPos);
+  }
+
   updateText(String(encoderPos));
+  digitalWrite(PADDLE_STATUS_LED, HIGH);
+  digitalWrite(STRAIGHT_STATUS_LED, LOW);
   delay(100);
+
+  lastRE_CLK = digitalRead(RE_CLK);
 }
 
 void straight_loop() {
@@ -63,78 +89,100 @@ void straight_loop() {
   }
 }
 
-void updateText(String a){
-
+void updateText(String a) {
   display.clearDisplay();
   display.setTextSize(6);
   display.setTextColor(WHITE);
-
-  String text = a;
-  int16_t textWidth = text.length() * 6 * 6;
+  int16_t textWidth = a.length() * 6 * 6;
   int16_t xPos = (SCREEN_WIDTH - textWidth) / 2;
   int16_t yPos = (SCREEN_HEIGHT - 3 * 8) / 2;
   display.setCursor(xPos, yPos);
-
-  display.println(text);
-
+  display.println(a);
   display.display();
 }
-void paddle_loop() {
-  
-  unsigned long currentMillis = millis();
 
-  // --- Rotary encoder handling ---
+void showSavedWPMMessage() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  int16_t xPos = (SCREEN_WIDTH - 6 * 12) / 2;  // Approx width of "Saved WPM"
+  int16_t yPos = (SCREEN_HEIGHT - 16) / 2;
+  display.setCursor(xPos-19, yPos);
+  display.println("Saved WPM");
+  display.display();
+}
+
+void handleEncoder() {
   currentRE_CLK = digitalRead(RE_CLK);
+  static int encoderPulseCount = 0;
+  static int lastDirection = 0;
 
-  if ((currentMillis - lastDebounceTime) > DEBOUNCE_DELAY) {
+  if ((millis() - lastEncoderChange) > ENCODER_DEBOUNCE) {
     if (currentRE_CLK != lastRE_CLK) {
-      unsigned long pulseInterval = currentMillis - lastDebounceTime;
+      int direction = digitalRead(RE_DT) == currentRE_CLK ? 1 : -1;
 
-      int step = 1;
-      if (pulseInterval < 30) step = 5;
-      else if (pulseInterval < 50) step = 4;
-      else if (pulseInterval < 80) step = 3;
-      else if (pulseInterval < 120) step = 2;
-
-      if (digitalRead(RE_DT) != currentRE_CLK) {
-        encoderPos += step;
-      } else {
-        encoderPos -= step;
+      if (direction != lastDirection) {
+        encoderPulseCount = 0;
       }
 
-      if (encoderPos < 5) encoderPos = 5;
-      if (encoderPos > 99) encoderPos = 99;
+      encoderPulseCount++;
+      lastDirection = direction;
 
-      if (encoderPos != lastEncoderPos) {
-        Serial.print("Encoder Position: ");
-        Serial.println(encoderPos);
-        updateText(String(encoderPos));
-        lastEncoderPos = encoderPos;
+      if (encoderPulseCount >= 2) {
+        int step = 1;
+        unsigned long interval = millis() - lastEncoderChange;
+
+        if (interval < 100) step = 2;
+
+        encoderPos += direction * step;
+        encoderPos = constrain(encoderPos, 5, 99);
+
+        if (encoderPos != lastEncoderPos) {
+          if (!showSavedMessage) updateText(String(encoderPos));
+          Serial.print("Encoder Position: ");
+          Serial.println(encoderPos);
+          lastEncoderPos = encoderPos;
+        }
+
+        encoderPulseCount = 0;
+        lastEncoderChange = millis();
       }
 
-      lastDebounceTime = currentMillis;
+      lastRE_CLK = currentRE_CLK;
     }
   }
+}
 
-  lastRE_CLK = currentRE_CLK;
+void paddle_loop() {
+  handleEncoder();
 
-  // --- Paddle tone generation (non-blocking) ---
   static bool isPlaying = false;
   static unsigned long toneStartTime = 0;
   static unsigned long pauseStartTime = 0;
   static bool isInPause = false;
+  static unsigned long toneDuration = 0;
 
   int dot = 1200 / encoderPos;
+  unsigned long currentMillis = millis();
 
-  bool paddlePressed = digitalRead(INPUT1_CW) == LOW || digitalRead(INPUT2_CW) == LOW;
+  bool paddlePressed1 = digitalRead(INPUT1_CW) == LOW;
+  bool paddlePressed2 = digitalRead(INPUT2_CW) == LOW;
+
+  bool paddlePressed = modeToggle ? (paddlePressed1 || paddlePressed2) : paddlePressed1;
 
   if (paddlePressed && !isPlaying && !isInPause) {
     tone(BUZZER, 600);
     isPlaying = true;
     toneStartTime = currentMillis;
+
+    if (modeToggle) {
+      toneDuration = paddlePressed2 ? (3 * dot) : dot;
+    } else {
+      toneDuration = dot;
+    }
   }
 
-  if (isPlaying && (currentMillis - toneStartTime >= dot)) {
+  if (isPlaying && (currentMillis - toneStartTime >= toneDuration)) {
     noTone(BUZZER);
     isPlaying = false;
     isInPause = true;
@@ -145,14 +193,12 @@ void paddle_loop() {
     isInPause = false;
   }
 
-  // If paddle is released, reset state
   if (!paddlePressed) {
     noTone(BUZZER);
     isPlaying = false;
     isInPause = false;
   }
 }
-
 
 void loop() {
   if (!modeToggle) {
@@ -161,26 +207,37 @@ void loop() {
     paddle_loop();
   }
 
-  // Read the button state
   int buttonMode = digitalRead(MODE_BUTTON);
 
-  // Check if the button state has changed (LOW to HIGH transition)
   if (buttonMode == LOW && lastButtonState == HIGH && (millis() - prevMillis) > debounceDelay) {
     modeToggle = !modeToggle;
     digitalWrite(PADDLE_STATUS_LED, modeToggle);
     digitalWrite(STRAIGHT_STATUS_LED, !modeToggle);
-
-    prevMillis = millis();  // Update the last debounce time
-
-    // Print the mode to serial monitor
-    if (!modeToggle) {
-      Serial.println("Straight");
-      noTone(BUZZER);
-    } else {
-      Serial.println("Paddle");
-      noTone(BUZZER);
-    }
+    prevMillis = millis();
+    Serial.println(modeToggle ? "Paddle" : "Straight");
+    noTone(BUZZER);
   }
 
   lastButtonState = buttonMode;
+
+  // CLICK button to save WPM
+  int clickButton = digitalRead(CLICK);
+
+  if (clickButton == LOW && lastClickState == HIGH && (millis() - lastClickMillis) > clickDebounceDelay) {
+    EEPROM.write(EEPROM_ADDR_WPM, encoderPos);
+    Serial.print("Saved WPM to EEPROM: ");
+    Serial.println(encoderPos);
+    showSavedMessage = true;
+    savedMessageStartTime = millis();
+    showSavedWPMMessage();
+    lastClickMillis = millis();
+  }
+
+  lastClickState = clickButton;
+
+  // Non-blocking hide "Saved WPM" message
+  if (showSavedMessage && millis() - savedMessageStartTime >= savedMessageDuration) {
+    showSavedMessage = false;
+    updateText(String(encoderPos));
+  }
 }
