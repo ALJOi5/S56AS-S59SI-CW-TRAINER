@@ -5,6 +5,6 @@ S56AS S59SI CW TRAINER is a tool used for training your CW sending skills al nik
 ---
 Ana slikca
 ---
-![signal-2025-04-09-200010](https://github.com/user-attachments/assets/9534f88d-6da3-46e3-a154-4f17dd066daf)
+![93fe874e-d251-434f-9648-a57140fc6ba4~1](https://github.com/user-attachments/assets/32e800f3-838e-42e0-aa3b-159b78801ed9)
 ---
 Designed in Cerkno
