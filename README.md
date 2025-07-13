@@ -1,6 +1,6 @@
 # S56AS-S59SI-CW-TRAINER
 ---
-S56AS S59SI CW TRAINER is a tool used for training your CW sending skills al niki.... wani wani wana
+S56AS S59SI CW TRAINER is a tool used for training your CW skills
 ### PCB files boda dadani Soon™
 ---
 Ana slikca
